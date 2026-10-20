@@ -5,3 +5,13 @@
 /smoke_test_output/
 /output.wav
 /apollo_*_smoke.wav
+
+# --- local training artifacts ---
+Exps/
+hdf5_datas/
+hdf5_subset/
+eval/
+wandb/
+*.h5
+*.hdf5
+/data/
