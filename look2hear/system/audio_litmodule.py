@@ -121,7 +121,8 @@ class AudioLightningModule(pl.LightningModule):
 
     def validation_step(self, batch, batch_nb):
         # cal val loss
-        ori_data, codec_data = batch
+        # MusdbMoisesdbEval returns (ori_wav, codec_wav, path)
+        ori_data, codec_data, _ = batch
         # print(mixtures.shape)
         est_sources = self(codec_data)
         loss = self.metrics(est_sources, ori_data)
@@ -161,7 +162,8 @@ class AudioLightningModule(pl.LightningModule):
         torch.cuda.empty_cache()
         
     def test_step(self, batch, batch_nb):
-        mixtures, targets = batch
+        # MusdbMoisesdbEval returns (ori_wav, codec_wav, path)
+        mixtures, targets, _ = batch
         est_sources = self(mixtures)
         loss = self.metrics(est_sources, targets)
         self.log(
