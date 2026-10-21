@@ -7,7 +7,7 @@ exp:
 datas:
   _target_: look2hear.datas.MusdbMoisesdbDataModule
   train_dir: /data/cse12212308/data/hdf5_subset
-  eval_dir: /data/cse12212308/data/eval
+  eval_dir: /data/cse12212308/data/eval_holdout
   codec_type: mp3
   codec_options:
     bitrate: random
