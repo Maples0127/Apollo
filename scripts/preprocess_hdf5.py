@@ -66,22 +66,44 @@ def _wavs(path):
     )
 
 
+STEM_NAMES = {
+    "bass", "bowed_strings", "drums", "guitar", "other", "other_keys",
+    "other_plucked", "percussion", "piano", "vocals", "wind",
+}
+
+
 def iter_tracks(roots):
-    """Yield (dirpath, {stem: [wav, ...]}, mixture_wav_or_None)."""
+    """Yield (dirpath, {stem: [wav, ...]}, mixture_wav_or_None).
+
+    A directory counts as a track when it holds ``mixture.wav`` (MUSDB18-HQ),
+    direct wavs named after known stems, or per-stem subdirectories
+    (MoisesDB). Traversal is pruned inside recognised tracks.
+    """
     for root in roots:
         for dirpath, dirnames, fnames in os.walk(root):
+            dirnames.sort()
             direct = {os.path.splitext(f)[0]: os.path.join(dirpath, f)
                       for f in fnames if f.lower().endswith(".wav")}
-            mixture = direct.pop("mixture", None)
-            stems = {name: [path] for name, path in direct.items()}
 
-            for d in sorted(dirnames):
-                sub = _wavs(os.path.join(dirpath, d))
-                if sub:
-                    stems.setdefault(d, []).extend(sub)
+            sub_stems = {}
+            for d in dirnames:
+                if d in STEM_NAMES:
+                    sub = _wavs(os.path.join(dirpath, d))
+                    if sub:
+                        sub_stems[d] = sub
 
-            if mixture is not None or len(stems) >= 1:
-                yield dirpath, stems, mixture
+            if "mixture" in direct:
+                stems = {k: [v] for k, v in direct.items() if k != "mixture"}
+                stems.update(sub_stems)
+            elif sub_stems and not direct:
+                stems = sub_stems
+            elif direct and set(direct) <= STEM_NAMES:
+                stems = {k: [v] for k, v in direct.items()}
+            else:
+                continue
+
+            dirnames[:] = []  # do not descend into a recognised track
+            yield dirpath, stems, direct.get("mixture")
 
 
 def load_group(paths, sr_expected):
