@@ -127,6 +127,8 @@ def main():
     ap.add_argument("--sr", type=int, default=44100)
     ap.add_argument("--session", type=float, default=6.0)
     ap.add_argument("--min-stems", type=int, default=1)
+    ap.add_argument("--shard", type=int, default=0, help="shard index for parallel runs")
+    ap.add_argument("--num-shards", type=int, default=1)
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -135,6 +137,8 @@ def main():
     skipped = []
 
     tracks = list(iter_tracks(args.roots))
+    if args.num_shards > 1:
+        tracks = tracks[args.shard :: args.num_shards]
     for dirpath, stems, mixture in tqdm(tracks, desc="tracks", dynamic_ncols=True):
         if len(stems) < args.min_stems:
             skipped.append(dirpath)
