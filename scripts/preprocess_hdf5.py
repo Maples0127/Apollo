@@ -5,18 +5,21 @@ Output layout matches what ``look2hear.datas.MusdbMoisesdbDataModule`` expects::
 
     <out>/<stem>/sampleN.hdf5      # each file: data (n_segments, 2, sr*session)
 
-Every directory that looks like a track (contains ``mixture.wav`` or several
-stem wavs) is segmented by the same energy VAD used by
-``JusperLee/Apollo-data-preprocess`` and split into ``session``-second chunks.
+Two on-disk layouts are supported:
 
-Datasets without ``mixture.wav`` (MoisesDB) get the mixture synthesised as the
-sample-wise sum of the track's stems, which is how the MoisesDB package defines
-``track.audio``.
+* MUSDB18-HQ: ``<track>/{mixture,vocals,drums,bass,other}.wav``
+* MoisesDB:   ``<track>/<stem>/<source-uuid>.wav`` (several sources per stem)
+
+For MoisesDB all sources of a stem are summed, and the mixture is synthesised as
+the sum of all stems (this is how ``moisesdb`` package defines ``track.audio``,
+MoisesDB ships no mixture.wav). Files are segmented with the same energy VAD as
+``JusperLee/Apollo-data-preprocess``.
 
 Usage
 -----
     python scripts/preprocess_hdf5.py \
-        --roots /data/.../musdb18hq/train --out /data/.../hdf5_train
+        --roots /data/.../musdb18hq/train /data/.../moisesdb/moisesdb_v0.1 \
+        --out /data/.../hdf5_train
 """
 import argparse
 import json
@@ -55,16 +58,44 @@ def vad_segments(x, sr, session_length=6.0, win=441):
     return out
 
 
+def _wavs(path):
+    return sorted(
+        os.path.join(path, f)
+        for f in os.listdir(path)
+        if f.lower().endswith(".wav") and os.path.isfile(os.path.join(path, f))
+    )
+
+
 def iter_tracks(roots):
+    """Yield (dirpath, {stem: [wav, ...]}, mixture_wav_or_None)."""
     for root in roots:
-        for dirpath, _dirnames, fnames in os.walk(root):
-            wavs = {
-                os.path.splitext(f)[0]: os.path.join(dirpath, f)
-                for f in fnames
-                if f.lower().endswith(".wav")
-            }
-            if "mixture" in wavs or len(wavs) > 1:
-                yield dirpath, wavs
+        for dirpath, dirnames, fnames in os.walk(root):
+            direct = {os.path.splitext(f)[0]: os.path.join(dirpath, f)
+                      for f in fnames if f.lower().endswith(".wav")}
+            mixture = direct.pop("mixture", None)
+            stems = {name: [path] for name, path in direct.items()}
+
+            for d in sorted(dirnames):
+                sub = _wavs(os.path.join(dirpath, d))
+                if sub:
+                    stems.setdefault(d, []).extend(sub)
+
+            if mixture is not None or len(stems) >= 1:
+                yield dirpath, stems, mixture
+
+
+def load_group(paths, sr_expected):
+    """Load and sum all wavs in a stem group, aligned to the shortest one."""
+    arrays = []
+    for p in paths:
+        x, sr = sf.read(p)
+        if sr != sr_expected:
+            raise SystemExit(f"{p}: sample rate {sr} != {sr_expected}")
+        arrays.append(x)
+    if len(arrays) == 1:
+        return arrays[0]
+    length = min(a.shape[0] for a in arrays)
+    return sum(a[:length] for a in arrays)
 
 
 def main():
@@ -77,27 +108,19 @@ def main():
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
-    counters = {}
-    nseg = {}
+    counters, nseg = {}, {}
     ntracks = 0
     skipped = []
 
     tracks = list(iter_tracks(args.roots))
-    for dirpath, wavs in tqdm(tracks, desc="tracks", dynamic_ncols=True):
-        stems = {k: v for k, v in wavs.items() if k != "mixture"}
+    for dirpath, stems, mixture in tqdm(tracks, desc="tracks", dynamic_ncols=True):
         if len(stems) < args.min_stems:
             skipped.append(dirpath)
             continue
 
-        arrays = {}
-        for name, path in stems.items():
-            x, sr = sf.read(path)
-            if sr != args.sr:
-                raise SystemExit(f"{path}: sample rate {sr} != {args.sr}")
-            arrays[name] = x
-
-        if "mixture" in wavs:
-            mx, _ = sf.read(wavs["mixture"])
+        arrays = {name: load_group(paths, args.sr) for name, paths in stems.items()}
+        if mixture is not None:
+            mx, _ = sf.read(mixture)
         else:
             length = min(a.shape[0] for a in arrays.values())
             mx = sum(a[:length] for a in arrays.values())
