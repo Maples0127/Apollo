@@ -14,12 +14,14 @@ Usage
 import argparse
 import os
 import random
+import sys
 
 import numpy as np
 import soundfile as sf
 import torch
-import torchaudio
-from torchaudio.functional import apply_codec
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from look2hear.datas.musdb_moisesdb_datamodule import codec_simu  # noqa: E402
 
 
 def pick_segment(x, sr, seconds=6.0):
@@ -38,13 +40,14 @@ def pick_segment(x, sr, seconds=6.0):
 
 
 def encode(x, sr, bitrate):
+    """MP3 encode/decode with the *same* delay compensation used in training.
+
+    ``codec_simu`` cross-correlates the encoded signal against the original and
+    rolls it back into alignment. MP3 codecs add a fixed encoder/decoder delay
+    (1105 samples at 44.1 kHz), so skipping this step makes SI-SDR meaningless.
+    """
     wav = torch.from_numpy(x.T.astype(np.float32))  # (C, T)
-    enc = apply_codec(wav, sr, format="mp3", compression=bitrate // 1000)
-    if enc.shape[-1] >= wav.shape[-1]:
-        enc = enc[..., : wav.shape[-1]]
-    else:
-        enc = torch.cat([enc, wav[..., enc.shape[-1] :]], -1)
-    return enc.numpy().T
+    return codec_simu(wav, sr, {"bitrate": bitrate}).numpy().T
 
 
 def main():
