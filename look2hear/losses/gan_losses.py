@@ -37,8 +37,8 @@ class MultiFrequencyDisLoss(_Loss):
         total = D_real + D_fake
         if return_stats:
             stats = {
-                "d_real": sum(o.mean() for o in target_outputs) / len(target_outputs),
-                "d_fake": sum(o.mean() for o in est_outputs) / len(est_outputs),
+                "real": sum(o.mean() for o in target_outputs) / len(target_outputs),
+                "fake": sum(o.mean() for o in est_outputs) / len(est_outputs),
             }
             return total, stats
         return total
