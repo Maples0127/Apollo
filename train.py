@@ -104,11 +104,16 @@ def train(cfg: DictConfig, resume: bool = False) -> Tuple[Dict[str, Any], Dict[s
     
     # instantiate trainer
     print_only(f"Instantiating trainer <{cfg.trainer._target_}>")
+    strategy = (
+        DDPStrategy(find_unused_parameters=True)
+        if str(cfg.trainer.get("accelerator", "cuda")) == "cuda"
+        else "auto"
+    )
     trainer: Trainer = hydra.utils.instantiate(
         cfg.trainer,
         callbacks=callbacks,
         logger=logger,
-        strategy=DDPStrategy(find_unused_parameters=True),
+        strategy=strategy,
     )
     
     ckpt_path = None
