@@ -104,7 +104,15 @@ class AudioLightningModule(pl.LightningModule):
         )
         if first:
             optimizer_g.zero_grad(set_to_none=True)
-        self.manual_backward(loss_g / accum)
+        # IMPORTANT: L_G also depends on the discriminator parameters (through
+        # D(fake) and the feature maps). Without freezing D here those gradients
+        # would be accumulated into the D buffers and applied by the D step,
+        # i.e. D would be trained to minimise L_G -> it collapses to a constant.
+        self.discriminator.requires_grad_(False)
+        try:
+            self.manual_backward(loss_g / accum)
+        finally:
+            self.discriminator.requires_grad_(True)
         if last:
             self.clip_gradients(optimizer_g, gradient_clip_val=5, gradient_clip_algorithm="norm")
             optimizer_g.step()
@@ -112,6 +120,14 @@ class AudioLightningModule(pl.LightningModule):
         if self.trainer.is_last_batch:
             scheduler_g.step()
             scheduler_d.step()
+
+        if last:
+            d_gnorm = torch.sqrt(sum((p.grad ** 2).sum() for p in self.discriminator.parameters()
+                                     if p.grad is not None))
+            g_gnorm = torch.sqrt(sum((p.grad ** 2).sum() for p in self.audio_model.parameters()
+                                     if p.grad is not None))
+            self.log("train_D_gnorm", d_gnorm, on_epoch=True, sync_dist=True, logger=True)
+            self.log("train_G_gnorm", g_gnorm, on_epoch=True, sync_dist=True, logger=True)
 
         self.log(
             "train_loss_d",
