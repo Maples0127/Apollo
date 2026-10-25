@@ -18,7 +18,7 @@ datas:
   segments: 3
   num_stems: 8
   snr_range: [-10, 10]
-  num_samples: 40000
+  num_samples: 20000
   batch_size: 1
   num_workers: 8
 
@@ -69,6 +69,7 @@ metrics:
 
 system:
   _target_: look2hear.system.audio_litmodule.AudioLightningModule
+  grad_accum: 8   # paper: 8 GPUs x batch 1 -> same effective batch on 1 GPU
 
 early_stopping:
   _target_: pytorch_lightning.callbacks.EarlyStopping
@@ -85,7 +86,7 @@ checkpoint:
   verbose: true
   save_top_k: 10
   save_last: true
-  every_n_train_steps: 4000
+  every_n_train_steps: 10000
   filename: '{epoch}-{step}-{val_loss:.4f}'
 
 logger:

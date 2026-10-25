@@ -44,6 +44,7 @@ class AudioLightningModule(pl.LightningModule):
         loss_func=None,
         metrics=None,
         scheduler=None,
+        grad_accum=1,
     ):
         super().__init__()
         self.audio_model = model
@@ -58,6 +59,9 @@ class AudioLightningModule(pl.LightningModule):
         # self.print(self.audio_model)
         self.validation_step_outputs = []
         self.test_step_outputs = []
+        # emulate a larger effective batch on a single GPU (paper: 8 x batch 1)
+        self.grad_accum = max(1, int(grad_accum))
+        self._micro_step = 0
         self.automatic_optimization = False
 
     def forward(self, wav):
@@ -73,29 +77,38 @@ class AudioLightningModule(pl.LightningModule):
         optimizer_g, optimizer_d = self.optimizers()
         # multiple schedulers
         scheduler_g, scheduler_d = self.lr_schedulers()
-        
-        # train discriminator
-        optimizer_g.zero_grad()
+
+        accum = self.grad_accum
+        micro = self._micro_step
+        self._micro_step = (micro + 1) % accum
+        first = micro == 0
+        last = micro == accum - 1
+
+        # ---- discriminator update (accumulated) ----
         output = self(codec_data)
-        
-        optimizer_d.zero_grad()
+        if first:
+            optimizer_d.zero_grad(set_to_none=True)
         est_outputs, _ = self.discriminator(output.detach(), sample_rate=44100)
         target_outputs, _ = self.discriminator(ori_data, sample_rate=44100)
-        
-        loss_d = self.loss_func["d"](target_outputs, est_outputs)
-        self.manual_backward(loss_d)
-        self.clip_gradients(optimizer_d, gradient_clip_val=5, gradient_clip_algorithm="norm")
-        optimizer_d.step()
-        # train generator
+        loss_d, d_stats = self.loss_func["d"](target_outputs, est_outputs, return_stats=True)
+        self.manual_backward(loss_d / accum)
+        if last:
+            self.clip_gradients(optimizer_d, gradient_clip_val=5, gradient_clip_algorithm="norm")
+            optimizer_d.step()
+
+        # ---- generator update (accumulated) ----
         est_outputs, est_feature_maps = self.discriminator(output, sample_rate=44100)
         _, targets_feature_maps = self.discriminator(ori_data, sample_rate=44100)
-        
-        loss_g = self.loss_func["g"](est_outputs, est_feature_maps, targets_feature_maps, output, ori_data)
-        self.manual_backward(loss_g)
-        self.clip_gradients(optimizer_g, gradient_clip_val=5, gradient_clip_algorithm="norm")
-        optimizer_g.step()
-        # print(loss)
-        
+        loss_g, g_stats = self.loss_func["g"](
+            est_outputs, est_feature_maps, targets_feature_maps, output, ori_data, return_stats=True
+        )
+        if first:
+            optimizer_g.zero_grad(set_to_none=True)
+        self.manual_backward(loss_g / accum)
+        if last:
+            self.clip_gradients(optimizer_g, gradient_clip_val=5, gradient_clip_algorithm="norm")
+            optimizer_g.step()
+
         if self.trainer.is_last_batch:
             scheduler_g.step()
             scheduler_d.step()
@@ -108,7 +121,7 @@ class AudioLightningModule(pl.LightningModule):
             sync_dist=True,
             logger=True,
         )
-        
+
         self.log(
             "train_loss_g",
             loss_g,
@@ -118,6 +131,24 @@ class AudioLightningModule(pl.LightningModule):
             logger=True,
         )
 
+        # component breakdown: makes a stalled GAN diagnosable at epoch level
+        for name, value in g_stats.items():
+            self.log(f"train_G_{name}", value, on_epoch=True, sync_dist=True, logger=True)
+        for name, value in d_stats.items():
+            self.log(f"train_D_{name}", value, on_epoch=True, sync_dist=True, logger=True)
+
+        return loss_g
+
+    def on_train_epoch_end(self):
+        """Print the GAN component breakdown once per epoch (visible in .out log)."""
+        cm = self.trainer.callback_metrics
+        keys = [
+            "train_loss_g", "train_G_rec", "train_G_fm", "train_G_adv",
+            "train_loss_d", "train_D_real", "train_D_fake",
+        ]
+        parts = [f"{k}={float(cm[k]):.4f}" for k in keys if k in cm]
+        if parts:
+            print(f"[epoch {self.current_epoch}] " + "  ".join(parts), flush=True)
 
     def validation_step(self, batch, batch_nb):
         # cal val loss

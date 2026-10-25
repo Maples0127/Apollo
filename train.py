@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import os
 from omegaconf import OmegaConf
 import argparse
+import glob
 import pytorch_lightning as pl
 import torch
 torch.set_float32_matmul_precision("highest")
@@ -26,7 +27,18 @@ warnings.filterwarnings("ignore")
 
 
 
-def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+def _find_resume_ckpt(cfg: DictConfig) -> Optional[str]:
+    """Return the most recent checkpoint in the experiment dir, if any."""
+    ckpt_dir = os.path.join(cfg.exp.dir, cfg.exp.name, "checkpoints")
+    if not os.path.isdir(ckpt_dir):
+        return None
+    candidates = [p for p in glob.glob(os.path.join(ckpt_dir, "last*.ckpt"))]
+    if not candidates:
+        return None
+    return max(candidates, key=os.path.getmtime)
+
+
+def train(cfg: DictConfig, resume: bool = False) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     if cfg.get("seed"):
         pl.seed_everything(cfg.seed, workers=True)
     
@@ -99,12 +111,24 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         strategy=DDPStrategy(find_unused_parameters=True),
     )
     
-    trainer.fit(system, datamodule=datamodule)
+    ckpt_path = None
+    if resume:
+        ckpt_path = _find_resume_ckpt(cfg)
+        if ckpt_path is None:
+            raise SystemExit(f"--resume given but no checkpoint found under {cfg.exp.dir}/{cfg.exp.name}/checkpoints")
+        ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        print_only(
+            f"Resuming from {ckpt_path} | epoch={ck.get('epoch')} global_step={ck.get('global_step')}"
+        )
+
+    trainer.fit(system, datamodule=datamodule, ckpt_path=ckpt_path)
     print_only("Training finished!")
     best_k = {k: v.item() for k, v in checkpoint.best_k_models.items()}
     with open(os.path.join(cfg.exp.dir, cfg.exp.name, "best_k_models.json"), "w") as f:
         json.dump(best_k, f, indent=0)
 
+    if not checkpoint.best_model_path or not os.path.exists(checkpoint.best_model_path):
+        raise SystemExit("no best checkpoint was saved (validation never ran?) - aborting")
     state_dict = torch.load(checkpoint.best_model_path)
     system.load_state_dict(state_dict=state_dict["state_dict"])
     system.cpu()
@@ -124,7 +148,12 @@ if __name__ == "__main__":
         default="local/conf.yml",
         help="Full path to save best validation model",
     )
-    
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume training from the newest last*.ckpt in the experiment dir",
+    )
+
     args = parser.parse_args()
     cfg = OmegaConf.load(args.conf_dir)
     
@@ -132,5 +161,5 @@ if __name__ == "__main__":
     # 保存配置到新的文件
     OmegaConf.save(cfg, os.path.join(cfg.exp.dir, cfg.exp.name, "config.yaml"))
     
-    train(cfg)
+    train(cfg, resume=args.resume)
     
