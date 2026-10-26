@@ -82,10 +82,11 @@ python ~/code/Apollo/scripts/plot_loss.py /tmp/loss.csv -o /tmp/loss.png
    `/home` 是 NFS（ailab01 挂载，5 节点共享），实测直读 107 MB/s，被递归扫描时
    掉到 5.8 MB/s；曾有一次 `grep -rl` 遗留 11 小时。需要搜就用具体路径 +
    `--include='*.log'`，或直接读上面的日志文件。
-2. **远程命令走 `~/bin/rssh`**（本机）：内置远端 `timeout`（默认 120 s，
+2. **远程命令走 `rssh`**（本机，`~/bin/rssh`，已软链到 `~/.pi/agent/bin/rssh`
+   因此在 pi 的 bash 里可直接调用）：内置远端 `timeout`（默认 120 s，
    `RSSH_TIMEOUT=600` 可调）、递归扫描拦截、以及 `~/pi-remote-ops.log` 审计日志。
-   pi 权限系统也拒绝上述裸命令（配置在
-   `~/.pi/agent/extensions/pi-permission-system/config.json`）。
+   pi 权限系统另有同名 deny 规则（`~/.pi/agent/extensions/pi-permission-system/config.json`），
+   但**配置在会话启动时加载**，改完要重启 pi 才生效（实测热改无效）。
 3. **破坏性操作先问**（删除数据/checkpoint、覆盖 run 目录、改 git 历史）。
 4. **不要在集群上跑 CPU 训练冒充验证**；GPU 只能通过 `sbatch`（分区
    `RTX5880Ada`，固定 `--nodelist=ailab02`，数据在节点本地盘）。
