@@ -82,15 +82,22 @@ python ~/code/Apollo/scripts/plot_loss.py /tmp/loss.csv -o /tmp/loss.png
    `/home` 是 NFS（ailab01 挂载，5 节点共享），实测直读 107 MB/s，被递归扫描时
    掉到 5.8 MB/s；曾有一次 `grep -rl` 遗留 11 小时。需要搜就用具体路径 +
    `--include='*.log'`，或直接读上面的日志文件。
-2. **远程命令走 `rssh`**（本机，`~/bin/rssh`，已软链到 `~/.pi/agent/bin/rssh`
+2. **注意：pi-web 会话不加载 pi-permission-system 扩展**（2026-10-26 实测：
+   deny 探针仍执行、`debugLog` 打开后没有生成日志、review 日志停在 9-10）。
+   因此 `config.json` 里的规则（包括保密目录 deny）**在 pi-web 会话中不生效**；
+   在 Admin1/TUI 会话中才生效。pi-web 里的实际护栏是
+   `~/.pi/agent/bin/ssh` 这层 shim（位于 agent 的 PATH，拦截 /home 递归扫描，
+   但放行 `…/code` 下的代码搜索），以及下面的 `rssh`。
+
+3. **远程命令走 `rssh`**（本机，`~/bin/rssh`，已软链到 `~/.pi/agent/bin/rssh`
    因此在 pi 的 bash 里可直接调用）：内置远端 `timeout`（默认 120 s，
    `RSSH_TIMEOUT=600` 可调）、递归扫描拦截、以及 `~/pi-remote-ops.log` 审计日志。
    pi 权限系统另有同名 deny 规则（`~/.pi/agent/extensions/pi-permission-system/config.json`），
    但**配置在会话启动时加载**，改完要重启 pi 才生效（实测热改无效）。
-3. **破坏性操作先问**（删除数据/checkpoint、覆盖 run 目录、改 git 历史）。
-4. **不要在集群上跑 CPU 训练冒充验证**；GPU 只能通过 `sbatch`（分区
+4. **破坏性操作先问**（删除数据/checkpoint、覆盖 run 目录、改 git 历史）。
+5. **不要在集群上跑 CPU 训练冒充验证**；GPU 只能通过 `sbatch`（分区
    `RTX5880Ada`，固定 `--nodelist=ailab02`，数据在节点本地盘）。
-5. 结论必须带**可复核证据**：文件路径 + 行数/数值 + 命令。
+6. 结论必须带**可复核证据**：文件路径 + 行数/数值 + 命令。
 
 ---
 
