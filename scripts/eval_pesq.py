@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""PESQ (wideband) evaluation for an Apollo checkpoint.
+"""Perceptual + fidelity evaluation of Apollo checkpoints on held-out pairs.
 
-SI-SDR only measures waveform fidelity; PESQ is a perceptual proxy for the
-"does it sound better than the codec" question. Clips are resampled to 16 kHz
-(PESQ-WB requirement) after downmixing to mono.
+SI-SDR measures waveform fidelity; restoration is judged perceptually, so this
+reports PESQ (wideband, 16 kHz) alongside SI-SDR for the codec input and for the
+model output. Results are appended per clip so a long run can be polled.
 
-Usage
------
-    python scripts/eval_pesq.py --ckpt <path> --eval-dir <dir> --out <json>
+    python scripts/eval_pesq.py --ckpt a.ckpt b.ckpt \
+        --eval-dir /data/.../eval_holdout50 --out /tmp/pesq.jsonl
 """
 import argparse
 import glob
@@ -18,79 +17,91 @@ import sys
 import numpy as np
 import soundfile as sf
 import torch
-from scipy.signal import resample_poly
+import torchaudio
 from pesq import pesq
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from look2hear.models.apollo import Apollo  # noqa: E402
 
+TARGET_SR = 16000
+
+
+def sisdr(est, ref, eps=1e-8):
+    est = est - est.mean()
+    ref = ref - ref.mean()
+    a = np.dot(est, ref) / (np.dot(ref, ref) + eps)
+    tgt = a * ref
+    return 10 * np.log10((np.sum(tgt ** 2) + eps) / (np.sum((est - tgt) ** 2) + eps))
+
 
 def to16k(x):
-    return resample_poly(x, 16000, 44100)
+    t = torch.from_numpy(np.ascontiguousarray(x.T.astype(np.float32)))
+    if 44100 != TARGET_SR:
+        t = torchaudio.functional.resample(t, 44100, TARGET_SR)
+    return t.mean(0).numpy()
 
 
-def load_model(path, device):
+def pesq_wb(ref, deg):
+    n = min(len(ref), len(deg))
+    return float(pesq(TARGET_SR, ref[:n], deg[:n], "wb"))
+
+
+def load_model(path):
     model = Apollo(sr=44100, win=20, feature_dim=256, layer=6)
-    ckpt = torch.load(path, map_location="cpu", weights_only=False)
-    state = {k[len("audio_model."):]: v for k, v in ckpt["state_dict"].items()
+    ck = torch.load(path, map_location="cpu", weights_only=False)
+    state = {k[len("audio_model."):]: v for k, v in ck["state_dict"].items()
              if k.startswith("audio_model.")}
     model.load_state_dict(state, strict=True)
-    return model.to(device).eval(), ckpt.get("epoch")
+    return model.eval(), ck.get("epoch")
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ckpt", required=True)
+    ap.add_argument("--ckpt", nargs="+", required=True)
     ap.add_argument("--eval-dir", required=True)
-    ap.add_argument("--out", default=None)
-    ap.add_argument("--device", default="cpu")
-    ap.add_argument("--limit", type=int, default=0, help="0 = all clips")
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--limit", type=int, default=0, help="evaluate only the first N clips")
     args = ap.parse_args()
 
-    model, epoch = load_model(args.ckpt, args.device)
-    dirs = sorted(glob.glob(os.path.join(args.eval_dir, "*/")))
+    clips = sorted(glob.glob(os.path.join(args.eval_dir, "*/")))
     if args.limit:
-        dirs = dirs[: args.limit]
+        clips = clips[: args.limit]
 
-    rows, base, mod = [], [], []
-    for d in dirs:
-        ori, _ = sf.read(os.path.join(d, "ori_wav.wav"))
-        codec, _ = sf.read(os.path.join(d, "codec_wav.wav"))
-        with torch.no_grad():
-            est = model(torch.from_numpy(codec.T.astype(np.float32)).unsqueeze(0).to(args.device))
-            est = est[0].cpu().numpy().T
-        n = min(len(ori), len(codec), len(est))
-        ref = to16k(ori[:n].mean(1))
-        c16 = to16k(codec[:n].mean(1))
-        e16 = to16k(est[:n].mean(1))
-        m = min(len(ref), len(c16), len(e16))
-        ref, c16, e16 = ref[:m], c16[:m], e16[:m]
-        try:
-            p_c = pesq(16000, ref, c16, "wb")
-            p_m = pesq(16000, ref, e16, "wb")
-        except Exception as exc:  # noqa: BLE001
-            print(f"skip {d}: {exc}")
-            continue
-        base.append(p_c)
-        mod.append(p_m)
-        rows.append({"clip": os.path.basename(d.rstrip("/")), "codec": p_c, "model": p_m})
-        print(f"{rows[-1]['clip']:>8}  codec={p_c:5.2f}  model={p_m:5.2f}  delta={p_m - p_c:+.2f}", flush=True)
+    with open(args.out, "w") as fh:
+        fh.write("")
 
-    summary = {
-        "ckpt": args.ckpt,
-        "epoch": epoch,
-        "n_clips": len(rows),
-        "pesq_codec_mean": float(np.mean(base)),
-        "pesq_model_mean": float(np.mean(mod)),
-        "delta_mean": float(np.mean(mod) - np.mean(base)),
-        "n_model_better": int(sum(r["model"] > r["codec"] for r in rows)),
-        "per_clip": rows,
-    }
-    print("\n=== PESQ summary ===")
-    print(json.dumps({k: v for k, v in summary.items() if k != "per_clip"}, indent=2))
-    if args.out:
-        with open(args.out, "w") as fh:
-            json.dump(summary, fh, indent=2)
+    for ckpt in args.ckpt:
+        model, epoch = load_model(ckpt)
+        rows = []
+        for d in clips:
+            ori, _ = sf.read(os.path.join(d, "ori_wav.wav"))
+            codec, _ = sf.read(os.path.join(d, "codec_wav.wav"))
+            with torch.no_grad():
+                est = model(torch.from_numpy(codec.T.astype(np.float32)).unsqueeze(0))[0].numpy().T
+            n = min(len(est), len(ori), len(codec))
+            ori, codec, est = ori[:n], codec[:n], est[:n]
+
+            o16, c16, e16 = to16k(ori), to16k(codec), to16k(est)
+            row = {
+                "ckpt": os.path.basename(ckpt),
+                "epoch": epoch,
+                "clip": os.path.basename(d.rstrip("/")),
+                "sisdr_codec": float(np.mean([sisdr(codec[:, c], ori[:, c]) for c in range(ori.shape[1])])),
+                "sisdr_model": float(np.mean([sisdr(est[:, c], ori[:, c]) for c in range(ori.shape[1])])),
+                "pesq_codec": pesq_wb(o16, c16),
+                "pesq_model": pesq_wb(o16, e16),
+            }
+            rows.append(row)
+            with open(args.out, "a") as fh:
+                fh.write(json.dumps(row) + "\n")
+
+        def mean(k):
+            return float(np.mean([r[k] for r in rows]))
+
+        print(f"epoch={epoch} n={len(rows)} "
+              f"SI-SDR codec={mean('sisdr_codec'):.2f} model={mean('sisdr_model'):.2f} "
+              f"| PESQ codec={mean('pesq_codec'):.3f} model={mean('pesq_model'):.3f} "
+              f"(delta PESQ {mean('pesq_model') - mean('pesq_codec'):+.3f})", flush=True)
 
 
 if __name__ == "__main__":
