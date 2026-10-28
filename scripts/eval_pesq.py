@@ -42,8 +42,12 @@ def to16k(x):
 
 
 def pesq_wb(ref, deg):
+    """PESQ can reject clips it considers utterance-free; report NaN then."""
     n = min(len(ref), len(deg))
-    return float(pesq(TARGET_SR, ref[:n], deg[:n], "wb"))
+    try:
+        return float(pesq(TARGET_SR, ref[:n], deg[:n], "wb"))
+    except Exception:
+        return float("nan")
 
 
 def load_model(path):
@@ -96,9 +100,11 @@ def main():
                 fh.write(json.dumps(row) + "\n")
 
         def mean(k):
-            return float(np.mean([r[k] for r in rows]))
+            vals = [r[k] for r in rows if np.isfinite(r[k])]
+            return float(np.mean(vals)) if vals else float("nan")
 
-        print(f"epoch={epoch} n={len(rows)} "
+        n_pesq = sum(1 for r in rows if np.isfinite(r["pesq_model"]))
+        print(f"epoch={epoch} n={len(rows)} (pesq ok on {n_pesq}) "
               f"SI-SDR codec={mean('sisdr_codec'):.2f} model={mean('sisdr_model'):.2f} "
               f"| PESQ codec={mean('pesq_codec'):.3f} model={mean('pesq_model'):.3f} "
               f"(delta PESQ {mean('pesq_model') - mean('pesq_codec'):+.3f})", flush=True)
