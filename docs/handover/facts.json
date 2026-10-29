@@ -1,0 +1,95 @@
+{
+  "project": "Apollo (band-sequence modeling for high-quality audio restoration) - reproduction",
+  "generated": "2026-10-29",
+  "paper": {
+    "title": "Apollo: Band-sequence Modeling for High-Quality Audio Restoration",
+    "venue": "ICASSP 2025",
+    "arxiv": "2409.08514",
+    "upstream_repo": "https://github.com/JusperLee/Apollo",
+    "eval_scale_in_paper": "5000 samples per case on combined MUSDB18-HQ + MoisesDB test set"
+  },
+  "repo": {
+    "fork": "git@github.com:Maples0127/Apollo.git",
+    "local_path": "/Users/Admin1/Desktop/Apollo",
+    "server_path": "/home/cse12212308/code/Apollo",
+    "head": "9070291",
+    "key_commits": {
+      "5da8da2": "single-GPU config, offline wandb, slurm launcher",
+      "fcd5865": "fix validation_step unpacking for 3-tuple eval batch",
+      "2ccbb5c": "build_eval: reuse codec_simu delay alignment (fixes broken val metric)",
+      "a1539a5": "preprocess_hdf5.py + build_eval.py (train-only, held-out eval)",
+      "5f21c11": "--resume, 8-step gradient accumulation, loss component logging",
+      "2b8ac7c": "CRITICAL: freeze D during L_G backward + tests/test_grad_accum.py",
+      "bc758ce": "drop every_n_train_steps (duplicate checkpoint names)",
+      "5aa11c9": "sbatch APOLLO_RESUME support",
+      "ac0e3b0": "PESQ evaluation script",
+      "9070291": "job_status: PESQ/SI-SDR summary"
+    }
+  },
+  "environment": {
+    "host": "ailab02",
+    "partition": "RTX5880Ada",
+    "gpu": "NVIDIA RTX 5880 Ada Generation (49 GB, single GPU)",
+    "conda_env": "/data/cse12212308/envs/look2hear",
+    "python": "3.10.13",
+    "torch": "2.0.0+cu118",
+    "torchaudio": "2.0.1+cu118",
+    "pytorch_lightning": "2.2.1"
+  },
+  "data": {
+    "train_hdf5": "/data/cse12212308/data/hdf5_train",
+    "train_hdf5_size": "445 GB",
+    "train_sources": "MUSDB18-HQ train (100 tracks) + MoisesDB (240 tracks), 11 stems + mixture",
+    "mixture_segments": 22226,
+    "eval_50": "/data/cse12212308/data/eval_holdout50 (50 MUSDB test clips, 32/48/64/96 kbps)",
+    "eval_12_deprecated": "/data/cse12212308/data/eval_holdout (too noisy, 12 clips)",
+    "notes": "MoisesDB came from Kaggle mirror boyazhangnb/moisesdb; MD5 differs from official (re-zipped), content verified"
+  },
+  "training_config": {
+    "effective_batch": "8 via 8-step gradient accumulation on 1 GPU",
+    "samples_per_epoch": 20000,
+    "epoch_time": "≈2.7 h",
+    "lr_g": 0.001,
+    "lr_d": 0.0001,
+    "weight_decay": 0.01,
+    "lr_schedule": "StepLR step_size=2 gamma=0.98",
+    "grad_clip": 5,
+    "loss_weights": "alpha=beta=gamma=1",
+    "model": "STFT 20/10 ms, 80 bands, feature_dim 256, B=6 bands-sequence blocks, 16.5M params",
+    "discriminator": "7 STFT scales [32..2048], complex RI input, spectral norm",
+    "epochs_done": 10,
+    "paper_epochs": 500
+  },
+  "jobs": {
+    "39355": {"state": "TIMEOUT 6h", "epochs": 2, "note": "buggy grad accumulation: D collapsed (D_real==D_fake)"},
+    "39460": {"state": "TIMEOUT 6h", "epochs": 2, "note": "after D-freeze fix"},
+    "39556": {"state": "TIMEOUT 24h", "epochs": "2..9", "note": "resume verified on real ckpt; plateau after epoch 8"}
+  },
+  "results": {
+    "codec_baseline_50clips": {"si_sdr": 13.69, "pesq_wb": 3.203},
+    "epoch1": {"si_sdr": 13.08, "d_si_sdr": -0.61, "pesq_wb": 3.824, "d_pesq": 0.621},
+    "epoch5": {"si_sdr": 13.25, "d_si_sdr": -0.44, "pesq_wb": 3.873, "d_pesq": 0.671},
+    "epoch8_best": {"si_sdr": 13.23, "d_si_sdr": -0.46, "pesq_wb": 3.876, "d_pesq": 0.673},
+    "epoch9": {"si_sdr": 13.10, "d_si_sdr": -0.59, "pesq_wb": 3.841, "d_pesq": 0.638},
+    "best_checkpoint": "/data/cse12212308/exp/Apollo/checkpoints/epoch=8-step=45000-val_loss=-12.8842.ckpt"
+  },
+  "diagnosis": {
+    "root_cause_of_first_run_failure": "L_G backward accumulated dL_G/dD into D gradient buffers under 8-step accumulation; D was trained to minimise L_G and collapsed to a constant output",
+    "evidence": "D(real)==D(fake) to 4 decimals (0.6467/0.6467), L_FM collapsed to 0.0002, output was near-identity (est-vs-codec 15-20 dB)",
+    "fix": "discriminator.requires_grad_(False) around manual_backward(loss_g); regression test tests/test_grad_accum.py",
+    "post_fix_evidence": "D(real)-D(fake) grows 0.0009 -> 0.0103; L_FM 0.014 -> 0.075; PESQ improves +0.62 -> +0.67"
+  },
+  "verdict": {
+    "method_validated_perceptually": true,
+    "paper_numbers_reproduced": false,
+    "reason": "only 10/500 epochs, single GPU, 50 clips (paper: 5000/case), no ViSQOL, no SR-GAN comparison",
+    "plateau": "epochs 5-8 flat (PESQ 3.873->3.876), epoch 9 regressed",
+    "discriminator_strength": "weak: D(real)-D(fake) ~ 0.007-0.010, L_adv constant at 0.255"
+  },
+  "ops_guards": {
+    "ssh_shim": "~/.pi/agent/bin/ssh - blocks recursive scans of /home (allows /home/*/code), logs to ~/pi-remote-ops.log",
+    "rssh": "~/bin/rssh - remote timeout (RSSH_TIMEOUT) + deny-list + audit log",
+    "permission_extension": "pi-permission-system do NOT load in pi-web sessions (verified); active only in Admin1/TUI",
+    "nfs_warning": "/home is NFS shared by 5 nodes; recursive grep once ran 11 h and dropped throughput 107 -> 5.8 MB/s"
+  }
+}
