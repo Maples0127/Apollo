@@ -50,12 +50,45 @@ echo "-- disk --"
 df -h /data | tail -1
 
 echo
+echo "== latest PESQ eval (if any) =="
+LATEST_PESQ=$(ls -1t "$EXP"/Apollo*/pesq_*.jsonl 2>/dev/null | head -1)
+if [ -n "${LATEST_PESQ:-}" ]; then
+  python3 - "$LATEST_PESQ" <<'PYEOF'
+import collections
+import json
+import math
+import sys
+
+rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+by_ckpt = collections.defaultdict(list)
+for row in rows:
+    by_ckpt[(row.get("epoch"), row.get("ckpt"))].append(row)
+
+print(sys.argv[1])
+for (epoch, _ckpt), group in sorted(by_ckpt.items(), key=lambda kv: (kv[0][0] is None, kv[0][0])):
+
+    def mean(key):
+        vals = [r[key] for r in group
+                if isinstance(r.get(key), (int, float)) and math.isfinite(r[key])]
+        return sum(vals) / len(vals) if vals else float("nan")
+
+    print(f"  epoch={epoch} n={len(group)} "
+          f"SI-SDR codec={mean('sisdr_codec'):.2f} model={mean('sisdr_model'):.2f} "
+          f"| PESQ codec={mean('pesq_codec'):.3f} model={mean('pesq_model'):.3f}")
+PYEOF
+else
+  echo "  none yet"
+fi
+
+echo
 echo "== latest held-out eval =="
 for f in $(ls -1t "$EXP"/*/eval_*.json 2>/dev/null | head -2); do
-  python3 - "$f" <<'PY'
-import json,sys
-d=json.load(open(sys.argv[1]))
+  python3 - "$f" <<'PYEOF'
+import json
+import sys
+
+d = json.load(open(sys.argv[1]))
 print(f"{sys.argv[1]}\n  epoch={d.get('epoch')} codec={d.get('codec_sisdr_mean'):.2f} "
       f"model={d.get('model_sisdr_mean'):.2f} delta={d.get('delta_mean'):+.2f}")
-PY
+PYEOF
 done
